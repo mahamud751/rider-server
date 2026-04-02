@@ -199,12 +199,16 @@ const handleSocketConnection = (io) => {
           const retryInterval = setInterval(retrySearch, 10000);
           retrySearch();
 
-          socket.on("rideAccepted", () => {
+          // Create named handler functions so we can remove them later
+          const handleRideAccepted = () => {
             rideAccepted = true;
             clearInterval(retryInterval);
-          });
+            // Clean up listeners after acceptance
+            socket.removeListener("rideAccepted", handleRideAccepted);
+            socket.removeListener("cancelRide", handleCancelRide);
+          };
 
-          socket.on("cancelRide", async () => {
+          const handleCancelRide = async () => {
             canceled = true;
             clearInterval(retryInterval);
             await Ride.findByIdAndDelete(rideId);
@@ -217,7 +221,13 @@ const handleSocketConnection = (io) => {
               });
             }
             console.log(`Customer ${user.id} canceled ride ${rideId}`);
-          });
+            // Clean up listeners after cancellation
+            socket.removeListener("rideAccepted", handleRideAccepted);
+            socket.removeListener("cancelRide", handleCancelRide);
+          };
+
+          socket.on("rideAccepted", handleRideAccepted);
+          socket.on("cancelRide", handleCancelRide);
         } catch (error) {
           console.error("Error searching for rider:", error);
           socket.emit("error", { message: "Error searching for rider" });
