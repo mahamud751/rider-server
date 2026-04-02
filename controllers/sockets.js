@@ -48,6 +48,11 @@ const handleSocketConnection = (io) => {
     const user = socket.user;
     console.log(`User Joined: ${user.id} (${user.role})`);
 
+    // If a rider reconnects (e.g. after server restart), ask them to re-register
+    if (user.role === "rider" && !onDutyRiders.has(user.id)) {
+      socket.emit("requestGoOnDuty");
+    }
+
     if (user.role === "rider") {
       socket.on("goOnDuty", (coordsPayload) => {
         const coords = normalizeCoords(coordsPayload);
@@ -109,7 +114,7 @@ const handleSocketConnection = (io) => {
             const riders = sendNearbyRiders(
               socket,
               { latitude: pickupLat, longitude: pickupLon },
-              ride
+              ride,
             );
             if (riders.length > 0 || retries >= MAX_RETRIES) {
               clearInterval(retryInterval);
@@ -157,7 +162,7 @@ const handleSocketConnection = (io) => {
         socket.join(`rider_${riderId}`);
         socket.emit("riderLocationUpdate", { riderId, coords: rider.coords });
         console.log(
-          `User ${user.id} subscribed to rider ${riderId}'s location.`
+          `User ${user.id} subscribed to rider ${riderId}'s location.`,
         );
       }
     });
