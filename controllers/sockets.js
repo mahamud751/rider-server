@@ -5,6 +5,26 @@ import Ride from "../models/Ride.js";
 
 const onDutyRiders = new Map();
 
+const normalizeCoords = (input) => {
+  const raw = input?.coords ? input.coords : input;
+  const latitude = Number(raw?.latitude);
+  const longitude = Number(raw?.longitude);
+  const heading = Number(raw?.heading || 0);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+  return { latitude, longitude, heading };
+};
+
+const normalizeRideId = (input) => {
+  if (!input) return null;
+  if (typeof input === "string") return input;
+  if (typeof input === "object") {
+    return input.rideId || input.id || null;
+  }
+  return null;
+};
+
 const handleSocketConnection = (io) => {
   io.use(async (socket, next) => {
     try {
@@ -29,7 +49,9 @@ const handleSocketConnection = (io) => {
     console.log(`User Joined: ${user.id} (${user.role})`);
 
     if (user.role === "rider") {
-      socket.on("goOnDuty", (coords) => {
+      socket.on("goOnDuty", (coordsPayload) => {
+        const coords = normalizeCoords(coordsPayload);
+        if (!coords) return;
         onDutyRiders.set(user.id, { socketId: socket.id, coords });
         socket.join("onDuty");
         console.log(`rider ${user.id} is now on duty.`);
@@ -43,7 +65,9 @@ const handleSocketConnection = (io) => {
         updateNearbyriders();
       });
 
-      socket.on("updateLocation", (coords) => {
+      socket.on("updateLocation", (coordsPayload) => {
+        const coords = normalizeCoords(coordsPayload);
+        if (!coords) return;
         if (onDutyRiders.has(user.id)) {
           onDutyRiders.get(user.id).coords = coords;
           console.log(`rider ${user.id} updated location.`);
@@ -62,8 +86,12 @@ const handleSocketConnection = (io) => {
         sendNearbyRiders(socket, customerCoords);
       });
 
-      socket.on("searchrider", async (rideId) => {
+      socket.on("searchrider", async (rideIdPayload) => {
         try {
+          const rideId = normalizeRideId(rideIdPayload);
+          if (!rideId) {
+            return socket.emit("error", { message: "Ride id missing" });
+          }
           const ride = await Ride.findById(rideId).populate("customer rider");
           if (!ride) return socket.emit("error", { message: "Ride not found" });
 
