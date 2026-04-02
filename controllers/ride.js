@@ -1,4 +1,5 @@
 import Ride from "../models/Ride.js";
+import { notifyRidersAboutNewRide } from "./sockets.js";
 import { BadRequestError, NotFoundError } from "../errors/index.js";
 import { StatusCodes } from "http-status-codes";
 import {
@@ -64,6 +65,14 @@ export const createRide = async (req, res) => {
 
     await ride.save();
     console.log("Ride created successfully:", ride._id);
+
+    const io = req.app.get("io");
+    const rideForSocket = await Ride.findById(ride._id).populate(
+      "customer rider",
+    );
+    if (rideForSocket && io) {
+      notifyRidersAboutNewRide(io, rideForSocket);
+    }
 
     res.status(StatusCodes.CREATED).json({
       message: "Ride created successfully",

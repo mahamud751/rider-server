@@ -5,6 +5,64 @@ import Ride from "../models/Ride.js";
 
 const onDutyRiders = new Map();
 
+/** Nearby radius: 200 km (meters) — matches previous filter */
+const NEARBY_MAX_DISTANCE_M = 200_000;
+
+function computeNearbyRidersForLocation(location) {
+  return Array.from(onDutyRiders.values())
+    .map((rider) => ({
+      ...rider,
+      distance: geolib.getDistance(rider.coords, location),
+    }))
+    .filter((rider) => rider.distance <= NEARBY_MAX_DISTANCE_M)
+    .sort((a, b) => a.distance - b.distance);
+}
+
+function serializeRideForSocket(ride) {
+  if (ride && typeof ride.toObject === "function") {
+    return ride.toObject({ virtuals: true });
+  }
+  return ride;
+}
+
+/**
+ * Emit ride offers to on-duty riders near pickup. Used by searchrider and HTTP createRide.
+ */
+function emitRideOffersToNearbyRiders(io, location, ride) {
+  const nearbyriders = computeNearbyRidersForLocation(location);
+  const payload = serializeRideForSocket(ride);
+  let delivered = 0;
+  for (const rider of nearbyriders) {
+    const sock = io.sockets?.sockets?.get(rider.socketId);
+    if (sock) {
+      sock.emit("rideOffer", payload);
+      delivered++;
+    } else {
+      io.to(rider.socketId).emit("rideOffer", payload);
+      delivered++;
+    }
+  }
+  console.log(
+    `[socket] rideOffer: ${delivered} delivery attempt(s), ${nearbyriders.length} nearby, ${onDutyRiders.size} on-duty map size, rideId=${payload?._id}`,
+  );
+  return nearbyriders;
+}
+
+/**
+ * Called after HTTP POST /ride/create so riders are notified even if the customer
+ * socket emits searchrider late or misses it.
+ */
+export function notifyRidersAboutNewRide(io, ride) {
+  if (!io || !ride?.pickup) return;
+  const { latitude, longitude } = ride.pickup;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  emitRideOffersToNearbyRiders(io, { latitude, longitude }, ride);
+}
+
+export function getOnDutyRiderCount() {
+  return onDutyRiders.size;
+}
+
 const normalizeCoords = (input) => {
   const raw = input?.coords ? input.coords : input;
   const latitude = Number(raw?.latitude);
@@ -28,7 +86,12 @@ const normalizeRideId = (input) => {
 const handleSocketConnection = (io) => {
   io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.headers.access_token;
+      // React Native / browser WebSocket often does not send custom headers; support auth + query.
+      const rawToken =
+        socket.handshake.headers.access_token ||
+        socket.handshake.auth?.access_token ||
+        socket.handshake.query?.access_token;
+      const token = Array.isArray(rawToken) ? rawToken[0] : rawToken;
       if (!token) return next(new Error("Authentication invalid: No token"));
 
       const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
@@ -56,7 +119,13 @@ const handleSocketConnection = (io) => {
     if (user.role === "rider") {
       socket.on("goOnDuty", (coordsPayload) => {
         const coords = normalizeCoords(coordsPayload);
-        if (!coords) return;
+        if (!coords) {
+          console.warn(
+            `[socket] goOnDuty ignored: invalid coords from rider ${user.id}`,
+            coordsPayload,
+          );
+          return;
+        }
         onDutyRiders.set(user.id, { socketId: socket.id, coords });
         socket.join("onDuty");
         console.log(`rider ${user.id} is now on duty.`);
@@ -183,29 +252,21 @@ const handleSocketConnection = (io) => {
     });
 
     function updateNearbyriders() {
-      io.sockets.sockets.forEach((socket) => {
-        if (socket.user?.role === "customer") {
-          const customerCoords = socket.user.coords;
-          if (customerCoords) sendNearbyRiders(socket, customerCoords);
+      io.sockets.sockets.forEach((clientSocket) => {
+        if (clientSocket.user?.role === "customer") {
+          const customerCoords = clientSocket.user.coords;
+          if (customerCoords) sendNearbyRiders(clientSocket, customerCoords);
         }
       });
     }
 
     function sendNearbyRiders(socket, location, ride = null) {
-      const nearbyriders = Array.from(onDutyRiders.values())
-        .map((rider) => ({
-          ...rider,
-          distance: geolib.getDistance(rider.coords, location),
-        }))
-        .filter((rider) => rider.distance <= 200000)
-        .sort((a, b) => a.distance - b.distance);
+      const nearbyriders = computeNearbyRidersForLocation(location);
 
       socket.emit("nearbyriders", nearbyriders);
 
       if (ride) {
-        nearbyriders.forEach((rider) => {
-          io.to(rider.socketId).emit("rideOffer", ride);
-        });
+        emitRideOffersToNearbyRiders(io, location, ride);
       }
 
       return nearbyriders;
