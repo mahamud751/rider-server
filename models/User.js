@@ -13,16 +13,23 @@ const userSchema = new Schema(
     },
     phone: {
       type: String,
-      required: true,
+      required: false,
+      sparse: true,
       unique: true,
       validate: {
         validator: function (v) {
-          // Bangladesh phone number validation (+880 followed by 10 digits)
+          if (!v) return true;
           return /^\+880\d{10}$/.test(v);
         },
         message: (props) =>
           `${props.value} is not a valid Bangladesh phone number!`,
       },
+    },
+    /** Bcrypt hash; only set for email/password accounts */
+    passwordHash: {
+      type: String,
+      select: false,
+      required: false,
     },
     name: {
       type: String,
@@ -35,10 +42,12 @@ const userSchema = new Schema(
       required: false,
       trim: true,
       lowercase: true,
+      sparse: true,
+      unique: true,
       validate: {
         validator: function (v) {
-          // Allow empty strings or validate email format
-          return !v || /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/.test(v);
+          if (!v) return true;
+          return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
         },
         message: (props) => `${props.value} is not a valid email!`,
       },
@@ -62,11 +71,17 @@ const userSchema = new Schema(
   }
 );
 
+userSchema.pre("validate", function (next) {
+  if (this.email === "") this.set("email", undefined);
+  next();
+});
+
 userSchema.methods.createAccessToken = function () {
   return jwt.sign(
     {
       id: this._id,
       phone: this.phone,
+      email: this.email,
       role: this.role,
     },
     process.env.ACCESS_TOKEN_SECRET,
@@ -76,7 +91,7 @@ userSchema.methods.createAccessToken = function () {
 
 userSchema.methods.createRefreshToken = function () {
   return jwt.sign(
-    { id: this._id, phone: this.phone, role: this.role },
+    { id: this._id, phone: this.phone, email: this.email, role: this.role },
     process.env.REFRESH_TOKEN_SECRET,
     {
       expiresIn: process.env.REFRESH_TOKEN_EXPIRY,

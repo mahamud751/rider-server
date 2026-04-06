@@ -1,8 +1,113 @@
 import User from "../models/User.js";
 import Ride from "../models/Ride.js";
 import { StatusCodes } from "http-status-codes";
-import { BadRequestError, UnauthenticatedError } from "../errors/index.js";
+import {
+  BadRequestError,
+  UnauthenticatedError,
+  NotFoundError,
+} from "../errors/index.js";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LEN = 8;
+
+const normalizeEmail = (email) =>
+  String(email || "")
+    .trim()
+    .toLowerCase();
+
+export const registerWithEmail = async (req, res) => {
+  const { email, password, confirmPassword, role } = req.body;
+
+  const normalized = normalizeEmail(email);
+  if (!normalized || !EMAIL_RE.test(normalized)) {
+    throw new BadRequestError("A valid email is required");
+  }
+  if (!password || typeof password !== "string") {
+    throw new BadRequestError("Password is required");
+  }
+  if (password.length < MIN_PASSWORD_LEN) {
+    throw new BadRequestError(
+      `Password must be at least ${MIN_PASSWORD_LEN} characters`,
+    );
+  }
+  if (password !== confirmPassword) {
+    throw new BadRequestError("Password and confirm password do not match");
+  }
+  if (!role || !["customer", "rider"].includes(role)) {
+    throw new BadRequestError("Valid role is required (customer or rider)");
+  }
+
+  const existing = await User.findOne({ email: normalized });
+  if (existing) {
+    throw new BadRequestError("An account with this email already exists");
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const user = new User({
+    email: normalized,
+    role,
+    name: "",
+    passwordHash,
+  });
+
+  await user.save();
+
+  const accessToken = user.createAccessToken();
+  const refreshToken = user.createRefreshToken();
+
+  const userOut = user.toObject();
+  delete userOut.passwordHash;
+
+  res.status(StatusCodes.CREATED).json({
+    message: "Account created successfully",
+    user: userOut,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+};
+
+export const loginWithEmail = async (req, res) => {
+  const { email, password, role: expectedRole } = req.body;
+
+  const normalized = normalizeEmail(email);
+  if (!normalized || !password) {
+    throw new BadRequestError("Email and password are required");
+  }
+
+  const user = await User.findOne({ email: normalized }).select(
+    "+passwordHash",
+  );
+
+  if (!user || !user.passwordHash) {
+    throw new UnauthenticatedError("Invalid email or password");
+  }
+
+  const ok = await bcrypt.compare(password, user.passwordHash);
+  if (!ok) {
+    throw new UnauthenticatedError("Invalid email or password");
+  }
+
+  if (expectedRole && user.role !== expectedRole) {
+    throw new BadRequestError(
+      `This account is registered as a ${user.role}. Please use the correct app entry.`,
+    );
+  }
+
+  const accessToken = user.createAccessToken();
+  const refreshToken = user.createRefreshToken();
+
+  const userOut = user.toObject();
+  delete userOut.passwordHash;
+
+  res.status(StatusCodes.OK).json({
+    message: "Signed in successfully",
+    user: userOut,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+};
 
 export const auth = async (req, res) => {
   const { phone, role, name, email, dateOfBirth } = req.body;
