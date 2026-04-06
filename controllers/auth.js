@@ -18,7 +18,7 @@ const normalizeEmail = (email) =>
     .toLowerCase();
 
 export const registerWithEmail = async (req, res) => {
-  const { email, password, confirmPassword, role } = req.body;
+  const { email, password, confirmPassword, role, phone } = req.body;
 
   const normalized = normalizeEmail(email);
   if (!normalized || !EMAIL_RE.test(normalized)) {
@@ -38,15 +38,25 @@ export const registerWithEmail = async (req, res) => {
   if (!role || !["customer", "rider"].includes(role)) {
     throw new BadRequestError("Valid role is required (customer or rider)");
   }
+  if (!phone || typeof phone !== "string" || !/^\+880\d{10}$/.test(phone)) {
+    throw new BadRequestError(
+      "A valid phone is required (+880 followed by 10 digits)",
+    );
+  }
 
   const existing = await User.findOne({ email: normalized });
   if (existing) {
     throw new BadRequestError("An account with this email already exists");
   }
+  const existingPhone = await User.findOne({ phone });
+  if (existingPhone) {
+    throw new BadRequestError("An account with this phone already exists");
+  }
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = new User({
     email: normalized,
+    phone,
     role,
     name: "",
     passwordHash,
